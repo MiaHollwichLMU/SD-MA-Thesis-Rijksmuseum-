@@ -1,1 +1,290 @@
+       mport json
+import re
+from datetime import datetime
+from pathlib import Path
+        
+import numpy as np
+import torch
+from PIL import Image
+from diffusers import StableDiffusionInpaintPipeline
+        
+    
+def composite_keep_original(original_pil, generated_pil, mask_pil):
+    w, h = original_pil.size
+    orig = original_pil.convert("RGB")
+    gen = generated_pil.convert("RGB")
+    msk = mask_pil.convert("L")
+    
+    if gen.size != (w, h):
+        gen = gen.resize((w, h), resample=Image.BICUBIC)
+    if msk.size != (w, h):
+        msk = msk.resize((w, h), resample=Image.NEAREST)
+                
+    orig_np = np.asarray(orig, dtype=np.uint8)
+    gen_np = np.asarray(gen, dtype=np.uint8)
 
+    m = np.asarray(msk, dtype=np.uint8)
+    m = (m > 127).astype(np.uint8)
+    m3 = np.repeat(m[:, :, None], 3, axis=2)
+
+    out_np = orig_np * (1 - m3) + gen_np * m3
+    return Image.fromarray(out_np.astype(np.uint8), mode="RGB")
+        
+        
+def pick_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+    
+
+def list_checkpoints(lora_base: Path):
+    if not lora_base.exists():
+        return []
+    items = []
+    for p in lora_base.iterdir():  
+        if p.is_dir():
+            m = re.match(r"checkpoint-(\d+)$", p.name)
+            if m:
+                items.append((int(m.group(1)), p))
+    items.sort(key=lambda x: x[0])
+    return [p for _, p in items]
+    
+
+def find_pairs(input_dir: Path):
+    img_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    images = [
+        p for p in input_dir.iterdir()
+        if p.is_file()
+        and p.suffix.lower() in img_exts
+        and not p.stem.endswith("_mask")
+    ]
+
+    pairs = []
+
+def pick_device():
+    if torch.cuda.is_available():
+        return "cuda"   
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def list_checkpoints(lora_base: Path):
+    if not lora_base.exists():
+        return []
+    items = []
+    for p in lora_base.iterdir():
+        if p.is_dir():
+            m = re.match(r"checkpoint-(\d+)$", p.name)
+            if m:
+                items.append((int(m.group(1)), p))
+    items.sort(key=lambda x: x[0])
+    return [p for _, p in items]
+        
+                
+def find_pairs(input_dir: Path):
+    img_exts = {".png", ".jpg", ".jpeg", ".webp"}
+    images = [
+        p for p in input_dir.iterdir() 
+        if p.is_file()
+        and p.suffix.lower() in img_exts
+        and not p.stem.endswith("_mask")
+    ]
+    
+    pairs = []
+    for img in sorted(images):
+        mask = input_dir / f"{img.stem}_mask.png"
+        if mask.exists():
+            pairs.append((img, mask))
+    return pairs
+        
+
+MODEL_INPAINT = "runwayml/stable-diffusion-inpainting"
+
+BASE_DIR = Path("inpainting_test2")   
+IN_DIR = BASE_DIR / "inputs"  
+OUT_DIR = BASE_DIR / "outputs"
+LOG_DIR = BASE_DIR / "logs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+IN_DIR.mkdir(parents=True, exist_ok=True)
+            
+PROMPT = "Rembrandt art Style, add missing parts, Barock oil Painting, clear structure, not blurry"
+NEG_PROMPT = "text, watermark, logo, blurry, low quality"
+    
+SEED = 12345
+GUIDANCE = 7.5
+STEPS = 30
+
+LORA_BASE = Path("training/output_lora_sd15_base")
+        
+        
+def run_once(tag, ckpt_path, init_image, mask_image, device):
+    generator = torch.Generator(device="cpu").manual_seed(SEED)
+     
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(MODEL_INPAINT).to(device) for img in sorted(images):
+        mask = input_dir / f"{img.stem}_mask.png"
+        if mask.exists():
+            pairs.append((img, mask))
+    return pairs
+        
+    
+MODEL_INPAINT = "runwayml/stable-diffusion-inpainting"
+
+BASE_DIR = Path("inpainting_test2")   
+IN_DIR = BASE_DIR / "inputs"  
+OUT_DIR = BASE_DIR / "outputs"
+LOG_DIR = BASE_DIR / "logs"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+IN_DIR.mkdir(parents=True, exist_ok=True)
+    
+PROMPT = "Rembrandt art Style, add missing parts, Barock oil Painting, clear struckture, not blurry"
+NEG_PROMPT = "text, watermark, logo, blurry, low quality"
+
+SEED = 12345
+GUIDANCE = 7.5  
+STEPS = 30
+    
+LORA_BASE = Path("training/output_lora_sd15_base")
+        
+        
+def run_once(tag, ckpt_path, init_image, mask_image, device):
+    generator = torch.Generator(device="cpu").manual_seed(SEED)
+     
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(MODEL_INPAINT).to(device)
+
+    if ckpt_path is not None: 
+        try:
+            pipe.load_lora_weights(str(ckpt_path))
+        except TypeError:
+            pipe.load_lora_weights(str(ckpt_path), prefix=None)
+        
+    result = pipe(
+        prompt=PROMPT,
+        negative_prompt=NEG_PROMPT,
+        image=init_image,
+        mask_image=mask_image,
+        guidance_scale=GUIDANCE,
+        num_inference_steps=STEPS,
+        generator=generator,
+    )
+
+    gen = result.images[0]
+    out = composite_keep_original(init_image, gen, mask_image)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = OUT_DIR / f"inpaint_{tag}_{ts}_seed{SEED}_gs{GUIDANCE}_steps{STEPS}.png"
+    out.save(out_path)
+
+    meta = {
+        "timestamp": ts,
+        "device": device,
+        "model": MODEL_INPAINT,
+        "prompt": PROMPT,
+        "negative_prompt": NEG_PROMPT,
+        "seed": SEED,
+        "guidance": GUIDANCE,
+        "steps": STEPS,
+  if ckpt_path is not None: 
+        try:
+            pipe.load_lora_weights(str(ckpt_path))
+        except TypeError:
+            pipe.load_lora_weights(str(ckpt_path), prefix=None)
+        
+    result = pipe(
+        prompt=PROMPT,
+        negative_prompt=NEG_PROMPT,
+        image=init_image,
+        mask_image=mask_image,
+        guidance_scale=GUIDANCE,
+        num_inference_steps=STEPS,
+        generator=generator,
+    )
+
+    gen = result.images[0]
+    out = composite_keep_original(init_image, gen, mask_image)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = OUT_DIR / f"inpaint_{tag}_{ts}_seed{SEED}_gs{GUIDANCE}_steps{STEPS}.png"
+    out.save(out_path)
+
+    meta = {
+        "timestamp": ts,
+        "device": device,
+        "model": MODEL_INPAINT,
+        "prompt": PROMPT,
+        "negative_prompt": NEG_PROMPT,
+        "seed": SEED,
+        "guidance": GUIDANCE,
+        "steps": STEPS,
+        "checkpoint": str(ckpt_path) if ckpt_path is not None else None,
+        "output": str(out_path),
+    }
+    meta_path = LOG_DIR / f"inpaint_{tag}_{ts}_seed{SEED}_gs{GUIDANCE}_steps{STEPS}.json"
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        
+    print(f"Saved image: {out_path}")
+    print(f"Saved meta : {meta_path}")
+
+        
+def main():
+    if not IN_DIR.exists():
+        raise FileNotFoundError(f"Fehlt: {IN_DIR}")
+        
+    pairs = find_pairs(IN_DIR)
+    if not pairs:
+        raise FileNotFoundError(
+            f"Keine Bild/Masken-Paare gefunden in {IN_DIR} "  
+            "(erwartet: NAME.jpg + NAME_mask.png)"
+        )
+    
+    device = pick_device()
+    checkpoints = list_checkpoints(LORA_BASE)
+
+    for img_path, mask_path in pairs:
+        init_image = Image.open(img_path).convert("RGB")
+        mask_image = Image.open(mask_path).convert("L")
+        
+        stem = img_path.stem
+     
+        run_once(f"{stem}_baseline", None, init_image, mask_image, device)   "checkpoint": str(ckpt_path) if ckpt_path is not None else None,
+        "output": str(out_path),
+    }
+    meta_path = LOG_DIR / f"inpaint_{tag}_{ts}_seed{SEED}_gs{GUIDANCE}_steps{STEPS}.json"
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+        
+    print(f"Saved image: {out_path}")
+    print(f"Saved meta : {meta_path}")
+
+        
+def main():
+    if not IN_DIR.exists():
+        raise FileNotFoundError(f"Fehlt: {IN_DIR}")
+        
+    pairs = find_pairs(IN_DIR)
+    if not pairs:
+        raise FileNotFoundError(
+            f"Keine Bild/Masken-Paare gefunden in {IN_DIR} "  
+            "(erwartet: NAME.jpg + NAME_mask.png)"
+        )
+    
+    device = pick_device()
+    checkpoints = list_checkpoints(LORA_BASE)
+    
+    for img_path, mask_path in pairs:
+        init_image = Image.open(img_path).convert("RGB")
+        mask_image = Image.open(mask_path).convert("L")
+        
+        stem = img_path.stem
+     
+        run_once(f"{stem}_baseline", None, init_image, mask_image, device)
+
+        for ckpt in checkpoints:
+            run_once(f"{stem}_{ckpt.name}", ckpt, init_image, mask_image, device)
+     
+
+if __name__ == "__main__":
+    main()
